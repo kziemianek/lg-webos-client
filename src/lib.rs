@@ -14,7 +14,7 @@ use tokio_tungstenite::{
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandRequest {
-    id: String,
+    id: u8,
     r#type: String,
     uri: String,
     payload: Option<Value>,
@@ -111,6 +111,7 @@ static HANDSHAKE: &'static str = r#"
 pub struct WebosClient {
     write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     registered: Arc<Mutex<bool>>,
+    next_command_id: Arc<Mutex<u8>>,
 }
 
 impl WebosClient {
@@ -120,12 +121,14 @@ impl WebosClient {
         println!("WebSocket handshake has been successfully completed");
         let (mut write, read) = ws_stream.split();
         let registered = Arc::from(Mutex::from(false));
+        let next_command_id = Arc::from(Mutex::from(0));
         let reg = registered.clone();
         tokio::spawn(async move { process_messages_from_server(read, reg).await });
         write.send(Message::text(HANDSHAKE)).await.unwrap();
 
         WebosClient {
-            write: write,
+            write,
+            next_command_id,
             registered: registered.clone(),
         }
     }
@@ -134,12 +137,21 @@ impl WebosClient {
         if !*self.registered.lock().unwrap() {
             panic!("Not registered")
         }
-        self.write
-            .send(Message::text(
-                serde_json::to_string(&create_command(cmd)).unwrap(),
-            ))
-            .await
-            .unwrap();
+        match self.next_command_id.lock() {
+            Ok(mut val) => {
+                *val += 1;
+
+                self.write
+                    .send(Message::text(
+                        serde_json::to_string(&create_command(*val, cmd)).unwrap(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            Err(_) => {
+                println!("Could not send command")
+            }
+        }
     }
 }
 
@@ -150,6 +162,7 @@ async fn process_messages_from_server(
     sink.for_each(|message| {
         let message = message.unwrap();
         let v: Value = serde_json::from_str(message.into_text().unwrap().as_ref()).unwrap();
+        println!("Message: {:?}", v);
         if v["type"] == "registered" {
             *registered.lock().unwrap() = true;
         }
@@ -158,46 +171,46 @@ async fn process_messages_from_server(
     .await
 }
 
-pub fn create_command(cmd: Command) -> Option<CommandRequest> {
+fn create_command(id: u8, cmd: Command) -> Option<CommandRequest> {
     match cmd {
         Command::CreateToast(text) => Some(CommandRequest {
-            id: String::from("1"),
+            id,
             r#type: String::from("request"),
             uri: String::from("ssap://system.notifications/createToast"),
             payload: Some(json!({ "message": text })),
         }),
         Command::OpenBrowser(url) => Some(CommandRequest {
-            id: String::from("1"),
+            id,
             r#type: String::from("request"),
             uri: String::from("ssap://system.launcher/open"),
             payload: Some(json!({ "target": url })),
         }),
         Command::TurnOff => Some(CommandRequest {
-            id: String::from("1"),
+            id,
             r#type: String::from("request"),
             uri: String::from("ssap://system/turnOff"),
             payload: None,
         }),
         Command::SetChannel(channel_id) => Some(CommandRequest {
-            id: String::from("1"),
+            id,
             r#type: String::from("request"),
             uri: String::from("ssap://tv/openChannel"),
             payload: Some(json!({ "channelId": channel_id })),
         }),
         Command::SetInput(input_id) => Some(CommandRequest {
-            id: String::from("1"),
+            id,
             r#type: String::from("request"),
             uri: String::from("ssap://tv/switchInput"),
             payload: Some(json!({ "inputId": input_id })),
         }),
         Command::SetMute(mute) => Some(CommandRequest {
-            id: String::from("1"),
+            id,
             r#type: String::from("request"),
             uri: String::from("ssap://audio/setMute"),
             payload: Some(json!({ "mute": mute })),
         }),
         Command::SetVolume(volume) => Some(CommandRequest {
-            id: String::from("1"),
+            id,
             r#type: String::from("request"),
             uri: String::from("ssap://audio/setVolume"),
             payload: Some(json!({ "volume": volume })),
