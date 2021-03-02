@@ -1,5 +1,8 @@
 # LG webos client
 
+[![Build Status](https://travis-ci.com/kziemianek/lg-webos-client.svg?branch=main)](https://travis-ci.com/kziemianek/lg-webos-client)
+
+
 Simple LG webOS client written purerly in Rust.
 Inspired by [lgtv.js](https://github.com/msloth/lgtv.js)
 
