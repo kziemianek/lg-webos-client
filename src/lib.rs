@@ -133,7 +133,7 @@ impl WebosClient {
         }
     }
 
-    pub async fn send_command(mut self, cmd: Command) {
+    pub async fn send_command(&mut self, cmd: Command) {
         if !*self.registered.lock().unwrap() {
             panic!("Not registered")
         }
