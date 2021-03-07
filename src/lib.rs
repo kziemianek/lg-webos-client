@@ -115,42 +115,48 @@ pub struct WebosClient {
 }
 
 impl WebosClient {
-    pub async fn new(address: &str) -> WebosClient {
-        let url = url::Url::parse(address).unwrap();
-        let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
-        println!("WebSocket handshake has been successfully completed");
-        let (mut write, read) = ws_stream.split();
-        let registered = Arc::from(Mutex::from(false));
-        let next_command_id = Arc::from(Mutex::from(0));
-        let reg = registered.clone();
-        tokio::spawn(async move { process_messages_from_server(read, reg).await });
-        write.send(Message::text(HANDSHAKE)).await.unwrap();
+    pub async fn new(address: &str) -> Result<WebosClient, String> {
+        match url::Url::parse(address) {
+            Ok(_url) => {
+                let (ws_stream, _) = connect_async(_url).await.expect("Failed to connect");
+                println!("WebSocket handshake has been successfully completed");
+                let (mut write, read) = ws_stream.split();
+                let registered = Arc::from(Mutex::from(false));
+                let next_command_id = Arc::from(Mutex::from(0));
+                let reg = registered.clone();
+                tokio::spawn(async move { process_messages_from_server(read, reg).await });
+                write.send(Message::text(HANDSHAKE)).await.unwrap();
 
-        WebosClient {
-            write,
-            next_command_id,
-            registered: registered.clone(),
+                Ok(WebosClient {
+                    write,
+                    next_command_id,
+                    registered: registered.clone(),
+                })
+            }
+            Err(_) => Err(String::from("Could not parse given address")),
         }
     }
 
-    pub async fn send_command(&mut self, cmd: Command) {
+    pub async fn send_command(&mut self, cmd: Command) -> Result<(), String> {
         if !*self.registered.lock().unwrap() {
-            panic!("Not registered")
+            return Err(String::from("Not registered"));
         }
         match self.next_command_id.lock() {
             Ok(mut val) => {
                 *val += 1;
 
-                self.write
+                match self
+                    .write
                     .send(Message::text(
                         serde_json::to_string(&create_command(*val, cmd)).unwrap(),
                     ))
                     .await
-                    .unwrap();
+                {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(String::from("Could not send command")),
+                }
             }
-            Err(_) => {
-                println!("Could not send command")
-            }
+            Err(_) => Err(String::from("Could not generate next id")),
         }
     }
 }
@@ -159,14 +165,19 @@ async fn process_messages_from_server(
     sink: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     registered: Arc<Mutex<bool>>,
 ) {
-    sink.for_each(|message| {
-        let message = message.unwrap();
-        let v: Value = serde_json::from_str(message.into_text().unwrap().as_ref()).unwrap();
-        println!("Message: {:?}", v);
-        if v["type"] == "registered" {
-            *registered.lock().unwrap() = true;
+    sink.for_each(|message| match message {
+        Ok(_message) => {
+            if let Some(text_message) = _message.into_text().ok() {
+                if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
+                    println!("Message: {:?}", json);
+                    if json["type"] == "registered" {
+                        *registered.lock().unwrap() = true;
+                    }
+                }
+            }
+            ready(())
         }
-        ready(())
+        Err(_) => ready(()),
     })
     .await
 }
