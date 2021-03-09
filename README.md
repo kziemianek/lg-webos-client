@@ -29,13 +29,20 @@ tokio = { version = "1.2.0", default-features = false, features = ["full"] }
 And then write code
 
 ```rust
+use lg_webos_client::{Command, WebosClient};
+use std::time::Duration;
 #[tokio::main]
 async fn main() {
-    let client = lg_webos_client::WebosClient::new("ws://192.168.1.62:3000/").await;
+    let mut client = WebosClient::new("ws://192.168.1.62:3000/").await.unwrap();
+
     // wait for registration...
-    std::thread::sleep(std::time::Duration::from_millis(3000));
-    client
-        .send_command(lg_webos_client::Command::SetVolume(20)).await;
+    std::thread::sleep(Duration::from_millis(3000));
+    let resp = client
+        .send_command(Command::SetVolume(20))
+        .await
+        .unwrap()
+        .await;
+    println!("Got response {}", resp.id);
 }
 ```
 

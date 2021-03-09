@@ -3,15 +3,19 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
-use serde::{Deserialize, Serialize};
+use pinky_swear::{Pinky, PinkySwear};
+use serde::Serialize;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandRequest {
     id: u8,
@@ -28,6 +32,11 @@ pub enum Command {
     SetInput(String),
     SetMute(bool),
     SetVolume(i8),
+    GetChannelList,
+}
+pub struct CommandResponse {
+    pub id: u8,
+    pub payload: Option<Value>,
 }
 
 static HANDSHAKE: &'static str = r#"
@@ -112,6 +121,7 @@ pub struct WebosClient {
     write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
     registered: Arc<Mutex<bool>>,
     next_command_id: Arc<Mutex<u8>>,
+    pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
 }
 
 impl WebosClient {
@@ -121,30 +131,39 @@ impl WebosClient {
                 let (ws_stream, _) = connect_async(_url).await.expect("Failed to connect");
                 println!("WebSocket handshake has been successfully completed");
                 let (mut write, read) = ws_stream.split();
+
                 let registered = Arc::from(Mutex::from(false));
                 let next_command_id = Arc::from(Mutex::from(0));
                 let reg = registered.clone();
-                tokio::spawn(async move { process_messages_from_server(read, reg).await });
+
+                let pending_requests = Arc::from(Mutex::from(HashMap::new()));
+                let requests_to_process = pending_requests.clone();
+                tokio::spawn(async move {
+                    process_messages_from_server(read, reg, requests_to_process).await
+                });
                 write.send(Message::text(HANDSHAKE)).await.unwrap();
 
                 Ok(WebosClient {
                     write,
                     next_command_id,
                     registered: registered.clone(),
+                    pending_requests,
                 })
             }
             Err(_) => Err(String::from("Could not parse given address")),
         }
     }
 
-    pub async fn send_command(&mut self, cmd: Command) -> Result<(), String> {
+    pub async fn send_command(
+        &mut self,
+        cmd: Command,
+    ) -> Result<PinkySwear<CommandResponse>, String> {
         if !*self.registered.lock().unwrap() {
             return Err(String::from("Not registered"));
         }
         match self.next_command_id.lock() {
             Ok(mut val) => {
                 *val += 1;
-
                 match self
                     .write
                     .send(Message::text(
@@ -152,7 +171,11 @@ impl WebosClient {
                     ))
                     .await
                 {
-                    Ok(_) => Ok(()),
+                    Ok(_) => {
+                        let (promise, pinky) = PinkySwear::<CommandResponse>::new();
+                        self.pending_requests.lock().unwrap().insert(*val, pinky);
+                        Ok(promise)
+                    }
                     Err(_) => Err(String::from("Could not send command")),
                 }
             }
@@ -164,14 +187,22 @@ impl WebosClient {
 async fn process_messages_from_server(
     sink: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     registered: Arc<Mutex<bool>>,
+    pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
 ) {
     sink.for_each(|message| match message {
         Ok(_message) => {
-            if let Some(text_message) = _message.into_text().ok() {
+            if let Some(text_message) = _message.clone().into_text().ok() {
                 if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
-                    println!("Message: {:?}", json);
                     if json["type"] == "registered" {
                         *registered.lock().unwrap() = true;
+                    } else if *registered.lock().unwrap() {
+                        let response = CommandResponse {
+                            id: json["id"].as_i64().unwrap() as u8,
+                            payload: Some(json["payload"].clone()),
+                        };
+
+                        let requests = pending_requests.lock().unwrap();
+                        requests.get(&response.id).unwrap().swear(response);
                     }
                 }
             }
@@ -225,6 +256,12 @@ fn create_command(id: u8, cmd: Command) -> Option<CommandRequest> {
             r#type: String::from("request"),
             uri: String::from("ssap://audio/setVolume"),
             payload: Some(json!({ "volume": volume })),
+        }),
+        Command::GetChannelList => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://tv/getChannelList"),
+            payload: None,
         }),
     }
 }
