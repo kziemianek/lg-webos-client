@@ -3,6 +3,7 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
     SinkExt, StreamExt,
 };
+use log::debug;
 use pinky_swear::{Pinky, PinkySwear};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -129,7 +130,7 @@ impl WebosClient {
         match url::Url::parse(address) {
             Ok(_url) => {
                 let (ws_stream, _) = connect_async(_url).await.expect("Failed to connect");
-                println!("WebSocket handshake has been successfully completed");
+                debug!("WebSocket handshake has been successfully completed");
                 let (mut write, read) = ws_stream.split();
 
                 let registered = Arc::from(Mutex::from(false));
