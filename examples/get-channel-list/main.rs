@@ -8,10 +8,6 @@ async fn main() {
 
     // wait for registration...
     std::thread::sleep(Duration::from_millis(3000));
-    let resp = client
-        .send_command(Command::GetChannelList)
-        .await
-        .unwrap()
-        .await;
+    let resp = client.send_command(Command::GetChannelList).await.unwrap();
     println!("Got response {:?}", resp.payload);
 }

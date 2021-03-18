@@ -167,10 +167,7 @@ impl WebosClient {
         })
     }
 
-    pub async fn send_command(
-        &mut self,
-        cmd: Command,
-    ) -> Result<PinkySwear<CommandResponse>, String> {
+    pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
         if !*self.registered.lock().unwrap() {
             return Err(String::from("Not registered"));
         }
@@ -187,7 +184,7 @@ impl WebosClient {
                     Ok(_) => {
                         let (promise, pinky) = PinkySwear::<CommandResponse>::new();
                         self.pending_requests.lock().unwrap().insert(*val, pinky);
-                        Ok(promise)
+                        Ok(promise.await)
                     }
                     Err(_) => Err(String::from("Could not send command")),
                 }
