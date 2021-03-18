@@ -34,6 +34,22 @@ pub enum Command {
     SetMute(bool),
     SetVolume(i8),
     GetChannelList,
+    GetCurrentChannel,
+    OpenChannel(String),
+    GetExternalInputList,
+    SwitchInput(String),
+    IsMuted,
+    GetVolume,
+    PlayMedia,
+    StopMedia,
+    PauseMedia,
+    RewindMedia,
+    ForwardMedia,
+    ChannelUp,
+    ChannelDown,
+    Turn3DOn,
+    Turn3DOff,
+    GetServicesList,
 }
 pub struct CommandResponse {
     pub id: u8,
@@ -127,32 +143,28 @@ pub struct WebosClient {
 
 impl WebosClient {
     pub async fn new(address: &str) -> Result<WebosClient, String> {
-        match url::Url::parse(address) {
-            Ok(_url) => {
-                let (ws_stream, _) = connect_async(_url).await.expect("Failed to connect");
-                debug!("WebSocket handshake has been successfully completed");
-                let (mut write, read) = ws_stream.split();
+        let url = url::Url::parse(address).expect("Could not parse given address");
+        let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+        debug!("WebSocket handshake has been successfully completed");
+        let (mut write, read) = ws_stream.split();
 
-                let registered = Arc::from(Mutex::from(false));
-                let next_command_id = Arc::from(Mutex::from(0));
-                let reg = registered.clone();
+        let registered = Arc::from(Mutex::from(false));
+        let next_command_id = Arc::from(Mutex::from(0));
+        let reg = registered.clone();
 
-                let pending_requests = Arc::from(Mutex::from(HashMap::new()));
-                let requests_to_process = pending_requests.clone();
-                tokio::spawn(async move {
-                    process_messages_from_server(read, reg, requests_to_process).await
-                });
-                write.send(Message::text(HANDSHAKE)).await.unwrap();
+        let pending_requests = Arc::from(Mutex::from(HashMap::new()));
+        let requests_to_process = pending_requests.clone();
+        tokio::spawn(
+            async move { process_messages_from_server(read, reg, requests_to_process).await },
+        );
+        write.send(Message::text(HANDSHAKE)).await.unwrap();
 
-                Ok(WebosClient {
-                    write,
-                    next_command_id,
-                    registered: registered.clone(),
-                    pending_requests,
-                })
-            }
-            Err(_) => Err(String::from("Could not parse given address")),
-        }
+        Ok(WebosClient {
+            write,
+            next_command_id,
+            registered: registered.clone(),
+            pending_requests,
+        })
     }
 
     pub async fn send_command(
@@ -262,6 +274,102 @@ fn create_command(id: u8, cmd: Command) -> Option<CommandRequest> {
             id,
             r#type: String::from("request"),
             uri: String::from("ssap://tv/getChannelList"),
+            payload: None,
+        }),
+        Command::GetCurrentChannel => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://tv/getCurrentChannel"),
+            payload: None,
+        }),
+        Command::OpenChannel(channel_id) => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://tv/openChannel"),
+            payload: Some(json!({ "channelId": channel_id })),
+        }),
+        Command::GetExternalInputList => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://tv/getExternalInputList"),
+            payload: None,
+        }),
+        Command::SwitchInput(input_id) => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://tv/switchInput"),
+            payload: Some(json!({ "inputId": input_id })),
+        }),
+        Command::IsMuted => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://audio/getStatus"),
+            payload: None,
+        }),
+        Command::GetVolume => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://audio/getVolume"),
+            payload: None,
+        }),
+        Command::PlayMedia => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://media.controls/play"),
+            payload: None,
+        }),
+        Command::StopMedia => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://media.controls/stop"),
+            payload: None,
+        }),
+        Command::PauseMedia => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://media.controls/pause"),
+            payload: None,
+        }),
+        Command::RewindMedia => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://media.controls/rewind"),
+            payload: None,
+        }),
+        Command::ForwardMedia => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://media.controls/fastForward"),
+            payload: None,
+        }),
+        Command::ChannelUp => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://tv/channelUp"),
+            payload: None,
+        }),
+        Command::ChannelDown => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://tv/channelDown"),
+            payload: None,
+        }),
+        Command::Turn3DOn => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://com.webos.service.tv.display/set3DOn"),
+            payload: None,
+        }),
+        Command::Turn3DOff => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://com.webos.service.tv.display/set3DOff"),
+            payload: None,
+        }),
+        Command::GetServicesList => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://com.webos.service.update/getCurrentSWInformation"),
             payload: None,
         }),
     }
