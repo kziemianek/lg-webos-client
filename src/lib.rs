@@ -136,9 +136,8 @@ static HANDSHAKE: &'static str = r#"
 
 pub struct WebosClient {
     write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    registered: Arc<Mutex<bool>>,
     next_command_id: Arc<Mutex<u8>>,
-    pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
+    ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
 }
 
 impl WebosClient {
@@ -148,64 +147,56 @@ impl WebosClient {
         debug!("WebSocket handshake has been successfully completed");
         let (mut write, read) = ws_stream.split();
 
-        let registered = Arc::from(Mutex::from(false));
         let next_command_id = Arc::from(Mutex::from(0));
-        let reg = registered.clone();
 
-        let pending_requests = Arc::from(Mutex::from(HashMap::new()));
-        let requests_to_process = pending_requests.clone();
-        tokio::spawn(
-            async move { process_messages_from_server(read, reg, requests_to_process).await },
-        );
+        let ongoing_requests = Arc::from(Mutex::from(HashMap::new()));
+        let requests_to_process = ongoing_requests.clone();
+        let (registration_promise, registration_pinky) = PinkySwear::<bool>::new();
+        tokio::spawn(async move {
+            process_messages_from_server(read, requests_to_process, registration_pinky).await
+        });
         write.send(Message::text(HANDSHAKE)).await.unwrap();
-
+        registration_promise.await;
         Ok(WebosClient {
             write,
             next_command_id,
-            registered: registered.clone(),
-            pending_requests,
+            ongoing_requests,
         })
     }
 
     pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
-        if !*self.registered.lock().unwrap() {
-            return Err(String::from("Not registered"));
-        }
-        match self.next_command_id.lock() {
-            Ok(mut val) => {
-                *val += 1;
-                match self
-                    .write
-                    .send(Message::text(
-                        serde_json::to_string(&create_command(*val, cmd)).unwrap(),
-                    ))
-                    .await
-                {
-                    Ok(_) => {
-                        let (promise, pinky) = PinkySwear::<CommandResponse>::new();
-                        self.pending_requests.lock().unwrap().insert(*val, pinky);
-                        Ok(promise.await)
-                    }
-                    Err(_) => Err(String::from("Could not send command")),
-                }
-            }
-            Err(_) => Err(String::from("Could not generate next id")),
-        }
+        let next_command_id = *self
+            .next_command_id
+            .lock()
+            .expect("Could not generate next id")
+            + 1;
+        self.write
+            .send(Message::text(
+                serde_json::to_string(&create_command(next_command_id, cmd)).unwrap(),
+            ))
+            .await
+            .expect("Could not send command");
+        let (promise, pinky) = PinkySwear::<CommandResponse>::new();
+        self.ongoing_requests
+            .lock()
+            .unwrap()
+            .insert(next_command_id, pinky);
+        Ok(promise.await)
     }
 }
 
 async fn process_messages_from_server(
     sink: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    registered: Arc<Mutex<bool>>,
     pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
+    registration_pinky: Pinky<bool>,
 ) {
     sink.for_each(|message| match message {
         Ok(_message) => {
             if let Some(text_message) = _message.clone().into_text().ok() {
                 if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
                     if json["type"] == "registered" {
-                        *registered.lock().unwrap() = true;
-                    } else if *registered.lock().unwrap() {
+                        registration_pinky.swear(true);
+                    } else {
                         let response = CommandResponse {
                             id: json["id"].as_i64().unwrap() as u8,
                             payload: Some(json["payload"].clone()),
