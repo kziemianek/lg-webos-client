@@ -15,6 +15,23 @@ Inspired by [lgtv.js](https://github.com/msloth/lgtv.js)
 * set input
 * set mute
 * set volume
+* get channel list
+* get current channel
+* open channel
+* get external input list
+* switch input
+* is muted
+* get volume
+* play media
+* stop media
+* pause media
+* rewind media
+* forward media
+* channel up
+* channel down
+* turn 3d on
+* turn 3d off
+* get services list
 
 ## Example
 
