@@ -1,8 +1,4 @@
-use futures_util::{
-    future::ready,
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use futures_util::{future::ready, Sink, SinkExt, StreamExt};
 use log::debug;
 use pinky_swear::{Pinky, PinkySwear};
 use serde::Serialize;
@@ -11,10 +7,8 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio::net::TcpStream;
-use tokio_tungstenite::{
-    connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
-};
+use tokio_tungstenite::tungstenite::Error;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,7 +129,7 @@ static HANDSHAKE: &'static str = r#"
 "#;
 
 pub struct WebosClient {
-    write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    write: Box<dyn Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin>,
     next_command_id: Arc<Mutex<u8>>,
     ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
 }
@@ -145,20 +139,27 @@ impl WebosClient {
         let url = url::Url::parse(address).expect("Could not parse given address");
         let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
         debug!("WebSocket handshake has been successfully completed");
-        let (mut write, read) = ws_stream.split();
+        let (write, read) = ws_stream.split();
+        WebosClient::from_stream_and_sink(read, write).await
+    }
 
+    pub async fn from_stream_and_sink<T, S>(stream: T, mut sink: S) -> Result<WebosClient, String>
+    where
+        T: StreamExt<Item = Result<Message, Error>> + 'static + Send,
+        S: Sink<Message, Error = Error> + Unpin + 'static,
+    {
         let next_command_id = Arc::from(Mutex::from(0));
 
         let ongoing_requests = Arc::from(Mutex::from(HashMap::new()));
         let requests_to_process = ongoing_requests.clone();
         let (registration_promise, registration_pinky) = PinkySwear::<bool>::new();
         tokio::spawn(async move {
-            process_messages_from_server(read, requests_to_process, registration_pinky).await
+            process_messages_from_server(stream, requests_to_process, registration_pinky).await
         });
-        write.send(Message::text(HANDSHAKE)).await.unwrap();
+        sink.send(Message::text(HANDSHAKE)).await.unwrap();
         registration_promise.await;
         Ok(WebosClient {
-            write,
+            write: Box::new(sink),
             next_command_id,
             ongoing_requests,
         })
@@ -175,7 +176,7 @@ impl WebosClient {
                 serde_json::to_string(&create_command(next_command_id, cmd)).unwrap(),
             ))
             .await
-            .expect("Could not send command");
+            .unwrap();
         let (promise, pinky) = PinkySwear::<CommandResponse>::new();
         self.ongoing_requests
             .lock()
@@ -185,11 +186,13 @@ impl WebosClient {
     }
 }
 
-async fn process_messages_from_server(
-    sink: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+async fn process_messages_from_server<T>(
+    sink: T,
     pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
     registration_pinky: Pinky<bool>,
-) {
+) where
+    T: StreamExt<Item = Result<Message, Error>>,
+{
     sink.for_each(|message| match message {
         Ok(_message) => {
             if let Some(text_message) = _message.clone().into_text().ok() {
