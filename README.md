@@ -39,14 +39,15 @@ Add to `Cargo.toml`
 
 ```toml
 [dependencies]
-lg-webos-client = "0.1.0"
+lg-webos-client = "0.2.0"
 tokio = { version = "1.2.0", default-features = false, features = ["full"] }
 ```
 
 And then write code
 
 ```rust
-use lg_webos_client::{Command, WebosClient};
+use lg_webos_client::client::WebosClient;
+use lg_webos_client::command::Command;
 
 #[tokio::main]
 async fn main() {
