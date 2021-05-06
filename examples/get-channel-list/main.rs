@@ -1,4 +1,5 @@
-use lg_webos_client::{Command, WebosClient};
+use lg_webos_client::client::WebosClient;
+use lg_webos_client::command::Command;
 
 #[tokio::main]
 async fn main() {
