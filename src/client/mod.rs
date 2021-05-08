@@ -15,7 +15,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use super::command::{create_command, Command, CommandResponse};
 
-static HANDSHAKE: &'static str = r#"
+static HANDSHAKE: &str = r#"
 {
     "type": "register",
     "id": "register_0",
@@ -92,7 +92,7 @@ static HANDSHAKE: &'static str = r#"
     }
 }
 "#;
-
+/// Client for interacting with TV
 pub struct WebosClient {
     write: Box<dyn Sink<Message, Error = Error> + Unpin>,
     next_command_id: Arc<Mutex<u8>>,
@@ -100,6 +100,7 @@ pub struct WebosClient {
 }
 
 impl WebosClient {
+    /// Creates client connected to device with given address
     pub async fn new(address: &str) -> Result<WebosClient, String> {
         let url = url::Url::parse(address).expect("Could not parse given address");
         let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
@@ -108,6 +109,7 @@ impl WebosClient {
         WebosClient::from_stream_and_sink(read, write).await
     }
 
+    /// Creates client using provided stream and sink
     pub async fn from_stream_and_sink<T, S>(stream: T, mut sink: S) -> Result<WebosClient, String>
     where
         T: Stream<Item = Result<Message, Error>> + 'static + Send,
@@ -128,13 +130,14 @@ impl WebosClient {
             ongoing_requests,
         })
     }
-
+    /// Sends single command and waits for response
     pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
         let (message, promise) = self.prepare_command_to_send(&cmd);
         self.write.send(message).await.unwrap();
         Ok(promise.await)
     }
 
+    /// Sends mutliple commands and waits for responses
     pub async fn send_all_commands(
         &mut self,
         cmds: Vec<Command>,
@@ -184,26 +187,27 @@ async fn process_messages_from_server<T>(
 ) where
     T: Stream<Item = Result<Message, Error>>,
 {
-    stream.for_each(|message| match message {
-        Ok(_message) => {
-            if let Some(text_message) = _message.clone().into_text().ok() {
-                if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
-                    if json["type"] == "registered" {
-                        registration_pinky.swear(true);
-                    } else {
-                        let response = CommandResponse {
-                            id: json["id"].as_i64().unwrap() as u8,
+    stream
+        .for_each(|message| match message {
+            Ok(_message) => {
+                if let Some(text_message) = _message.clone().into_text().ok() {
+                    if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
+                        if json["type"] == "registered" {
+                            registration_pinky.swear(true);
+                        } else {
+                            let response = CommandResponse {
+                                id: json["id"].as_i64().unwrap() as u8,
 
-                            payload: Some(json["payload"].clone()),
-                        };
-                        let requests = pending_requests.lock().unwrap();
-                        requests.get(&response.id).unwrap().swear(response);
+                                payload: Some(json["payload"].clone()),
+                            };
+                            let requests = pending_requests.lock().unwrap();
+                            requests.get(&response.id).unwrap().swear(response);
+                        }
                     }
                 }
+                ready(())
             }
-            ready(())
-        }
-        Err(_) => ready(()),
-    })
-    .await
+            Err(_) => ready(()),
+        })
+        .await
 }
