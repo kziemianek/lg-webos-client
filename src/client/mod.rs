@@ -13,6 +13,8 @@ use std::{
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
+use crate::command::CommandRequest;
+
 use super::command::{create_command, Command, CommandResponse};
 
 static HANDSHAKE: &str = r#"
@@ -165,8 +167,7 @@ impl WebosClient {
             .lock()
             .unwrap()
             .insert(next_command_id, pinky);
-        let message =
-            Message::text(serde_json::to_string(&create_command(next_command_id, cmd)).unwrap());
+        let message = Message::from(&create_command(next_command_id, cmd).unwrap());
         (message, promise)
     }
 
@@ -210,4 +211,10 @@ async fn process_messages_from_server<T>(
             Err(_) => ready(()),
         })
         .await
+}
+
+impl From<&CommandRequest> for Message {
+    fn from(request: &CommandRequest) -> Self {
+        Message::text(serde_json::to_string(request).unwrap())
+    }
 }
