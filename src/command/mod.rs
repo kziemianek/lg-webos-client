@@ -41,7 +41,7 @@ pub struct CommandResponse {
     pub payload: Option<Value>,
 }
 
-pub fn create_command(id: u8, cmd: Command) -> Option<CommandRequest> {
+pub fn create_command(id: u8, cmd: &Command) -> Option<CommandRequest> {
     match cmd {
         Command::CreateToast(text) => Some(CommandRequest {
             id,

@@ -1,4 +1,7 @@
-use futures_util::{future::ready, Sink, SinkExt, StreamExt};
+use futures_util::{
+    future::{join_all, ready},
+    Sink, SinkExt, StreamExt,
+};
 use log::debug;
 use pinky_swear::{Pinky, PinkySwear};
 use serde_json::Value;
@@ -125,6 +128,44 @@ impl WebosClient {
         })
     }
 
+    pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
+        let (message, promise) = self.prepare_command_to_send(&cmd);
+        self.write.send(message).await.unwrap();
+        Ok(promise.await)
+    }
+
+    pub async fn send_all_commands(
+        &mut self,
+        cmds: Vec<Command>,
+    ) -> Result<Vec<CommandResponse>, String> {
+        let mut promises: Vec<PinkySwear<CommandResponse>> = vec![];
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = cmds
+            .iter()
+            .map(|cmd| {
+                let (message, promise) = self.prepare_command_to_send(cmd);
+                promises.push(promise);
+                Result::Ok(message)
+            })
+            .collect();
+
+        let mut iter = futures_util::stream::iter(messages);
+        self.write.send_all(&mut iter).await.unwrap();
+        Result::Ok(join_all(promises).await)
+    }
+
+    fn prepare_command_to_send(&mut self, cmd: &Command) -> (Message, PinkySwear<CommandResponse>) {
+        let next_command_id = self.generate_next_id();
+        let (promise, pinky) = PinkySwear::<CommandResponse>::new();
+
+        self.ongoing_requests
+            .lock()
+            .unwrap()
+            .insert(next_command_id, pinky);
+        let message =
+            Message::text(serde_json::to_string(&create_command(next_command_id, cmd)).unwrap());
+        (message, promise)
+    }
+
     fn generate_next_id(&mut self) -> u8 {
         let mut guard = self
             .next_command_id
@@ -132,25 +173,6 @@ impl WebosClient {
             .expect("Could not lock next_command_id");
         *guard += 1;
         *guard
-    }
-
-    pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
-        let next_command_id = self.generate_next_id();
-        self.write
-            .send(Message::text(
-                serde_json::to_string(&create_command(next_command_id, cmd)).unwrap(),
-            ))
-            .await
-            .unwrap();
-
-        let (promise, pinky) = PinkySwear::<CommandResponse>::new();
-
-        self.ongoing_requests
-            .lock()
-            .unwrap()
-            .insert(next_command_id, pinky);
-
-        Ok(promise.await)
     }
 }
 
@@ -167,6 +189,7 @@ async fn process_messages_from_server<T>(
         Ok(_message) => {
             if let Some(text_message) = _message.clone().into_text().ok() {
                 if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
+                    println!("Message: {}", json);
                     if json["type"] == "registered" {
                         registration_pinky.swear(true);
                     } else {
