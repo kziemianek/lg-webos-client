@@ -125,13 +125,17 @@ impl WebosClient {
         })
     }
 
-    pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
-        let next_command_id = *self
+    fn generate_next_id(&mut self) -> u8 {
+        let mut guard = self
             .next_command_id
             .lock()
-            .expect("Could not generate next id")
-            + 1;
+            .expect("Could not lock next_command_id");
+        *guard += 1;
+        *guard
+    }
 
+    pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
+        let next_command_id = self.generate_next_id();
         self.write
             .send(Message::text(
                 serde_json::to_string(&create_command(next_command_id, cmd)).unwrap(),
