@@ -1,6 +1,7 @@
+use futures::{Stream, StreamExt};
 use futures_util::{
     future::{join_all, ready},
-    Sink, SinkExt, StreamExt,
+    Sink, SinkExt,
 };
 use log::debug;
 use pinky_swear::{Pinky, PinkySwear};
@@ -109,7 +110,7 @@ impl WebosClient {
 
     pub async fn from_stream_and_sink<T, S>(stream: T, mut sink: S) -> Result<WebosClient, String>
     where
-        T: StreamExt<Item = Result<Message, Error>> + 'static + Send,
+        T: Stream<Item = Result<Message, Error>> + 'static + Send,
         S: Sink<Message, Error = Error> + Unpin + 'static,
     {
         let next_command_id = Arc::from(Mutex::from(0));
@@ -177,19 +178,16 @@ impl WebosClient {
 }
 
 async fn process_messages_from_server<T>(
-    sink: T,
-
+    stream: T,
     pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
-
     registration_pinky: Pinky<bool>,
 ) where
-    T: StreamExt<Item = Result<Message, Error>>,
+    T: Stream<Item = Result<Message, Error>>,
 {
-    sink.for_each(|message| match message {
+    stream.for_each(|message| match message {
         Ok(_message) => {
             if let Some(text_message) = _message.clone().into_text().ok() {
                 if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
-                    println!("Message: {}", json);
                     if json["type"] == "registered" {
                         registration_pinky.swear(true);
                     } else {
@@ -203,10 +201,8 @@ async fn process_messages_from_server<T>(
                     }
                 }
             }
-
             ready(())
         }
-
         Err(_) => ready(()),
     })
     .await
