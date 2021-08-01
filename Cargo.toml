@@ -1,7 +1,7 @@
 [package]
 name = "lg-webos-client"
-version = "0.3.0"
-authors = ["kasper.ziemianek@gmail.com"]
+version = "0.3.1"
+authors = ["kasper.ziemianek@gmail.com", "gavinpease@gmail.com"]
 edition = "2018"
 description = "LG webOS client"
 readme = "README.md"
