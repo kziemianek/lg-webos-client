@@ -28,12 +28,11 @@ pub struct WebosClient {
 #[derive(Serialize, Deserialize)]
 pub struct WebOsClientConfig {
     address: String,
-    has_key: bool,
     key: String,
 }
 
 impl ::std::default::Default for WebOsClientConfig {
-    fn default() -> WebOsClientConfig {
+    fn default() -> Self {
         WebOsClientConfig::new("ws://lgwebostv:3000/", "")
     }
 }
@@ -43,10 +42,8 @@ impl WebOsClientConfig {
     pub fn new(addr: &str, the_key: &str) -> WebOsClientConfig {
         let address = String::from(addr);
         let key = String::from(the_key);
-        let has_key = the_key != "";
         WebOsClientConfig {
             address,
-            has_key,
             key,
         }
     }
@@ -78,7 +75,7 @@ impl WebosClient {
 
         let mut handshake = get_handshake();
         // Check to see if the config has a key, if it does, add it to the handshake.
-        if config.has_key {
+        if config.key == "" {
             handshake["payload"]["client-key"] = Value::from(config.key);
         }
         let formatted_handshake = format!("{}", handshake);
