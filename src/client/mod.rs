@@ -14,8 +14,9 @@ use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::command::CommandRequest;
-
 use super::command::{create_command, Command, CommandResponse};
+
+use serde::{Serialize, Deserialize};
 
 /// Client for interacting with TV
 pub struct WebosClient {
@@ -24,10 +25,17 @@ pub struct WebosClient {
     ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct WebOsClientConfig {
     address: String,
     has_key: bool,
     key: String,
+}
+
+impl ::std::default::Default for WebOsClientConfig {
+    fn default() -> WebOsClientConfig {
+        WebOsClientConfig::new("ws://lgwebostv:3000/", "")
+    }
 }
 
 impl WebOsClientConfig {
