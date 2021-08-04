@@ -75,7 +75,7 @@ impl WebosClient {
 
         let mut handshake = get_handshake();
         // Check to see if the config has a key, if it does, add it to the handshake.
-        if config.key == "" {
+        if config.key != "" {
             handshake["payload"]["client-key"] = Value::from(config.key);
         }
         let formatted_handshake = format!("{}", handshake);
