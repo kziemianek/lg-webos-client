@@ -1,4 +1,4 @@
-# LG webos client
+# LG WebOs Client 0.3.1
 
 [![Build Status](https://travis-ci.com/kziemianek/lg-webos-client.svg?branch=main)](https://travis-ci.com/kziemianek/lg-webos-client)
 
@@ -8,30 +8,30 @@ Inspired by [lgtv.js](https://github.com/msloth/lgtv.js)
 
 ## Supported commands
 
-* create toast
-* open browser
-* turn off
-* set channel
-* set input
-* set mute
-* set volume
-* get channel list
-* get current channel
-* open channel
-* get external input list
-* switch input
-* is muted
-* get volume
-* play media
-* stop media
-* pause media
-* rewind media
-* forward media
-* channel up
-* channel down
-* turn 3d on
-* turn 3d off
-* get services list
+* Create toast
+* Open browser
+* Turn off
+* Set channel
+* Set input
+* Set mute
+* Set volume
+* Get channel list
+* Get current channel
+* Open channel
+* Get external input list
+* Switch input
+* Is muted
+* Get volume
+* Play media
+* Stop media
+* Pause media
+* Rewind media
+* Forward media
+* Channel up
+* Channel down
+* Turn 3d on
+* Turn 3d off
+* Get services list
 
 ## Example
 
@@ -43,19 +43,28 @@ lg-webos-client = "0.2.0"
 tokio = { version = "1.2.0", default-features = false, features = ["full"] }
 ```
 
-And then write code
+And then use the following snippet
 
 ```rust
-use lg_webos_client::client::WebosClient;
+use lg_webos_client::client::*;
 use lg_webos_client::command::Command;
 
 #[tokio::main]
 async fn main() {
     env_logger::init();
-    let mut client = WebosClient::new("ws://192.168.1.62:3000/").await.unwrap();
+    // Note: We must specify the ws protocol, and if we do not have the key, we must just use a blank str.
+    let config = WebOsClientConfig::new("ws://192.168.1.62:3000/","");
+    
+    let mut client = WebosClient::new(config).await.unwrap();
     let resp = client.send_command(Command::GetChannelList).await.unwrap();
     println!("Got response {:?}", resp.payload);
 }
 ```
 
-The code above simply connects to tv in local network and after successfull registration lists all channels.
+The code above simply connects to tv in local network and after a successful registration lists all channels.
+Note that we must specify the `ws` protocol.  If we have a key, we can pass that in the config, and the 
+client will use said key.  If no key is specified, the client will output a key generated from the device.
+
+# Contributors
+* kziemianek
+* GT3CH1
