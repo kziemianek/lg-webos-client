@@ -49,6 +49,17 @@ impl WebOsClientConfig {
     }
 }
 
+impl Clone for WebOsClientConfig {
+    fn clone(&self) -> Self {
+        let addr = self.address.clone();
+        let key = self.key.clone();
+        WebOsClientConfig {
+            address: addr,
+            key,
+        }
+    }
+}
+
 impl WebosClient {
     /// Creates client connected to device with given address
     pub async fn new(config: WebOsClientConfig) -> Result<WebosClient, String> {
