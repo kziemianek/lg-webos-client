@@ -27,8 +27,8 @@ pub struct WebosClient {
 
 #[derive(Serialize, Deserialize)]
 pub struct WebOsClientConfig {
-    address: String,
-    key: String,
+    pub address: String,
+    pub key: String,
 }
 
 impl ::std::default::Default for WebOsClientConfig {
