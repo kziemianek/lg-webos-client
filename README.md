@@ -39,7 +39,7 @@ Add to `Cargo.toml`
 
 ```toml
 [dependencies]
-lg-webos-client = "0.2.0"
+lg-webos-client = "0.3.1"
 tokio = { version = "1.2.0", default-features = false, features = ["full"] }
 ```
 
