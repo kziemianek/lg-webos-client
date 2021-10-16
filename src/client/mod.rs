@@ -23,25 +23,25 @@ pub struct WebosClient {
     write: Box<dyn Sink<Message, Error=Error> + Unpin>,
     next_command_id: Arc<Mutex<u8>>,
     ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
+    pub key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct WebOsClientConfig {
     pub address: String,
-    pub key: String,
+    pub key: Option<String>,
 }
 
 impl ::std::default::Default for WebOsClientConfig {
     fn default() -> Self {
-        WebOsClientConfig::new("ws://lgwebostv:3000/", "")
+        WebOsClientConfig::new("ws://lgwebostv:3000/", None)
     }
 }
 
 impl WebOsClientConfig {
     /// Creates a new client configuration
-    pub fn new(addr: &str, the_key: &str) -> WebOsClientConfig {
+    pub fn new(addr: &str, key: Option<String>) -> WebOsClientConfig {
         let address = String::from(addr);
-        let key = String::from(the_key);
         WebOsClientConfig {
             address,
             key,
@@ -79,23 +79,24 @@ impl WebosClient {
         let next_command_id = Arc::from(Mutex::from(0));
         let ongoing_requests = Arc::from(Mutex::from(HashMap::new()));
         let requests_to_process = ongoing_requests.clone();
-        let (registration_promise, registration_pinky) = PinkySwear::<bool>::new();
+        let (registration_promise, registration_pinky) = PinkySwear::<Option<String>>::new();
         tokio::spawn(async move {
             process_messages_from_server(stream, requests_to_process, registration_pinky).await
         });
 
         let mut handshake = get_handshake();
         // Check to see if the config has a key, if it does, add it to the handshake.
-        if config.key != "" {
-            handshake["payload"]["client-key"] = Value::from(config.key);
+        if let Some(key) = config.key {
+            handshake["payload"]["client-key"] = Value::from(key);
         }
         let formatted_handshake = format!("{}", handshake);
         sink.send(Message::text(formatted_handshake)).await.unwrap();
-        registration_promise.await;
+        let key = registration_promise.await;
         Ok(WebosClient {
             write: Box::new(sink),
             next_command_id,
             ongoing_requests,
+            key,
         })
     }
     /// Sends single command and waits for response
@@ -150,7 +151,7 @@ impl WebosClient {
 async fn process_messages_from_server<T>(
     stream: T,
     pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
-    registration_pinky: Pinky<bool>,
+    registration_pinky: Pinky<Option<String>>,
 ) where
     T: Stream<Item=Result<Message, Error>>,
 {
@@ -161,7 +162,11 @@ async fn process_messages_from_server<T>(
                     if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
                         println!("JSON Response -> {}", json);
                         if json["type"] == "registered" {
-                            registration_pinky.swear(true);
+                            let key = json.get("payload")
+                                .and_then(|p| p.get("client-key"))
+                                .and_then(|k| k.as_str())
+                                .map(Into::into);
+                            registration_pinky.swear(key);
                         } else {
                             let mut error: bool = false;
                             let res = match json["id"].as_i64() {
