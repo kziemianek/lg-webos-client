@@ -159,7 +159,7 @@ async fn process_messages_from_server<T>(
             Ok(_message) => {
                 if let Some(text_message) = _message.clone().into_text().ok() {
                     if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
-                        println!("JSON Response -> {}", json);
+                        debug!("JSON Response: {}", json);
                         if json["type"] == "registered" {
                             registration_pinky.swear(true);
                         } else {
