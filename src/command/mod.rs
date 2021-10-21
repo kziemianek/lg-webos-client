@@ -35,7 +35,9 @@ pub enum Command {
     Turn3DOn,
     Turn3DOff,
     GetServicesList,
+    Launch(String, Value),
 }
+
 pub struct CommandResponse {
     pub id: u8,
     pub payload: Option<Value>,
@@ -187,5 +189,11 @@ pub fn create_command(id: u8, cmd: &Command) -> Option<CommandRequest> {
             uri: String::from("ssap://com.webos.service.update/getCurrentSWInformation"),
             payload: None,
         }),
+        Command::Launch(app_id, params) => Some(CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://system.launcher/launch"),
+            payload: Some(json!({ "id": app_id, "params": params })),
+        })
     }
 }

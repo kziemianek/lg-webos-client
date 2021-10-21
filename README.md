@@ -32,6 +32,7 @@ Inspired by [lgtv.js](https://github.com/msloth/lgtv.js)
 * Turn 3d on
 * Turn 3d off
 * Get services list
+* Launch an app
 
 ## Example
 
