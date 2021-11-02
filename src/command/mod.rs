@@ -194,6 +194,6 @@ pub fn create_command(id: u8, cmd: &Command) -> Option<CommandRequest> {
             r#type: String::from("request"),
             uri: String::from("ssap://system.launcher/launch"),
             payload: Some(json!({ "id": app_id, "params": params })),
-        })
+        }),
     }
 }
