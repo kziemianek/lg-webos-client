@@ -1,4 +1,4 @@
-# LG WebOs Client 0.3.1
+# LG WebOs Client 0.4.0
 
 [![Build Status](https://travis-ci.com/kziemianek/lg-webos-client.svg?branch=main)](https://travis-ci.com/kziemianek/lg-webos-client)
 
@@ -40,7 +40,7 @@ Add to `Cargo.toml`
 
 ```toml
 [dependencies]
-lg-webos-client = "0.3.1"
+lg-webos-client = "0.4.1"
 tokio = { version = "1.2.0", default-features = false, features = ["full"] }
 ```
 
