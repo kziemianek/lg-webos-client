@@ -1,17 +1,22 @@
-use futures::{Stream, StreamExt};
+use futures::{
+    stream::{SplitSink, SplitStream},
+    Stream, StreamExt,
+};
 use futures_util::{
     future::{join_all, ready},
-    Sink, SinkExt,
+    SinkExt,
 };
 use log::debug;
 use pinky_swear::{Pinky, PinkySwear};
 use serde_json::Value;
 use std::{
+    cell::RefCell,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio_tungstenite::tungstenite::Error;
+use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{tungstenite::Error, MaybeTlsStream, WebSocketStream};
 
 use super::command::{create_command, Command, CommandResponse};
 use crate::command::CommandRequest;
@@ -20,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 /// Client for interacting with TV
 pub struct WebosClient {
-    write: Box<dyn Sink<Message, Error = Error> + Unpin>,
+    write: RefCell<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
     next_command_id: Arc<Mutex<u8>>,
     ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
     pub key: Option<String>,
@@ -65,15 +70,11 @@ impl WebosClient {
     }
 
     /// Creates client using provided stream and sink
-    pub async fn from_stream_and_sink<T, S>(
-        stream: T,
-        mut sink: S,
+    pub async fn from_stream_and_sink(
+        stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+        mut sink: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         config: WebOsClientConfig,
-    ) -> Result<WebosClient, String>
-    where
-        T: Stream<Item = Result<Message, Error>> + 'static + Send,
-        S: Sink<Message, Error = Error> + Unpin + 'static,
-    {
+    ) -> Result<WebosClient, String> {
         let next_command_id = Arc::from(Mutex::from(0));
         let ongoing_requests = Arc::from(Mutex::from(HashMap::new()));
         let requests_to_process = ongoing_requests.clone();
@@ -91,16 +92,16 @@ impl WebosClient {
         sink.send(Message::text(formatted_handshake)).await.unwrap();
         let key = registration_promise.await;
         Ok(WebosClient {
-            write: Box::new(sink),
+            write: RefCell::new(sink),
             next_command_id,
             ongoing_requests,
             key,
         })
     }
     /// Sends single command and waits for response
-    pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
+    pub async fn send_command(self, cmd: Command) -> Result<CommandResponse, String> {
         let (message, promise) = self.prepare_command_to_send(&cmd);
-        self.write.send(message).await.unwrap();
+        self.write.borrow_mut().send(message).await.unwrap();
         Ok(promise.await)
     }
 
@@ -120,11 +121,11 @@ impl WebosClient {
             .collect();
 
         let mut iter = futures_util::stream::iter(messages);
-        self.write.send_all(&mut iter).await.unwrap();
+        self.write.borrow_mut().send_all(&mut iter).await.unwrap();
         Result::Ok(join_all(promises).await)
     }
 
-    fn prepare_command_to_send(&mut self, cmd: &Command) -> (Message, PinkySwear<CommandResponse>) {
+    fn prepare_command_to_send(&self, cmd: &Command) -> (Message, PinkySwear<CommandResponse>) {
         let next_command_id = self.generate_next_id();
         let (promise, pinky) = PinkySwear::<CommandResponse>::new();
 
@@ -136,7 +137,7 @@ impl WebosClient {
         (message, promise)
     }
 
-    fn generate_next_id(&mut self) -> u8 {
+    fn generate_next_id(&self) -> u8 {
         let mut guard = self
             .next_command_id
             .lock()
@@ -156,7 +157,7 @@ async fn process_messages_from_server<T>(
     stream
         .for_each(|message| match message {
             Ok(_message) => {
-                if let Some(text_message) = _message.into_text().ok() {
+                if let Ok(text_message) = _message.into_text() {
                     if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
                         debug!("JSON Response: {}", json);
                         if json["type"] == "registered" {
@@ -203,7 +204,7 @@ impl From<&CommandRequest> for Message {
 /// A client-key can be set by something similar to
 /// `get_handshake()["payload"]["client-key"] = ...`
 /// # Return
-///     The initial handshake packet needed to connect to a WebOS device.
+/// The initial handshake packet needed to connect to a WebOS device.
 fn get_handshake() -> serde_json::Value {
     serde_json::json!(
         {
