@@ -26,9 +26,18 @@ use serde::{Deserialize, Serialize};
 /// Client for interacting with TV
 pub struct WebosClient {
     write: RefCell<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
+    //todo: use uuids instead
     next_command_id: Arc<Mutex<u8>>,
+    //todo: use RwLock instead of Mutex or ?
     ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
     pub key: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ClientError {
+    MalformedUrl,
+    ConnectionError,
+    CommandSendError,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,7 +46,7 @@ pub struct WebOsClientConfig {
     pub key: Option<String>,
 }
 
-impl ::std::default::Default for WebOsClientConfig {
+impl Default for WebOsClientConfig {
     fn default() -> Self {
         WebOsClientConfig::new("ws://lgwebostv:3000/", None)
     }
@@ -61,9 +70,11 @@ impl Clone for WebOsClientConfig {
 
 impl WebosClient {
     /// Creates client connected to device with given address
-    pub async fn new(config: WebOsClientConfig) -> Result<WebosClient, String> {
-        let url = url::Url::parse(&config.address).expect("Could not parse given address");
-        let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+    pub async fn new(config: WebOsClientConfig) -> Result<WebosClient, ClientError> {
+        let url = url::Url::parse(&config.address).map_err(|_| ClientError::MalformedUrl)?;
+        let (ws_stream, _) = connect_async(url)
+            .await
+            .map_err(|_| ClientError::ConnectionError)?;
         debug!("WebSocket handshake has been successfully completed");
         let (write, read) = ws_stream.split();
         WebosClient::from_stream_and_sink(read, write, config).await
@@ -74,7 +85,7 @@ impl WebosClient {
         stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         mut sink: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         config: WebOsClientConfig,
-    ) -> Result<WebosClient, String> {
+    ) -> Result<WebosClient, ClientError> {
         let next_command_id = Arc::from(Mutex::from(0));
         let ongoing_requests = Arc::from(Mutex::from(HashMap::new()));
         let requests_to_process = ongoing_requests.clone();
@@ -89,7 +100,9 @@ impl WebosClient {
             handshake["payload"]["client-key"] = Value::from(key);
         }
         let formatted_handshake = format!("{}", handshake);
-        sink.send(Message::text(formatted_handshake)).await.unwrap();
+        sink.send(Message::text(formatted_handshake))
+            .await
+            .map_err(|_| ClientError::CommandSendError)?;
         let key = registration_promise.await;
         Ok(WebosClient {
             write: RefCell::new(sink),
@@ -99,9 +112,15 @@ impl WebosClient {
         })
     }
     /// Sends single command and waits for response
-    pub async fn send_command(self, cmd: Command) -> Result<CommandResponse, String> {
-        let (message, promise) = self.prepare_command_to_send(&cmd);
-        self.write.borrow_mut().send(message).await.unwrap();
+    pub async fn send_command(self, cmd: Command) -> Result<CommandResponse, ClientError> {
+        let (message, promise) = self
+            .prepare_command_to_send(&cmd)
+            .map_err(|_| ClientError::CommandSendError)?;
+        self.write
+            .borrow_mut()
+            .send(message)
+            .await
+            .map_err(|_| ClientError::CommandSendError)?;
         Ok(promise.await)
     }
 
@@ -109,32 +128,40 @@ impl WebosClient {
     pub async fn send_all_commands(
         &mut self,
         cmds: Vec<Command>,
-    ) -> Result<Vec<CommandResponse>, String> {
+    ) -> Result<Vec<CommandResponse>, ClientError> {
         let mut promises: Vec<PinkySwear<CommandResponse>> = vec![];
         let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = cmds
             .iter()
             .map(|cmd| {
-                let (message, promise) = self.prepare_command_to_send(cmd);
+                let (message, promise) = self.prepare_command_to_send(cmd).unwrap();
                 promises.push(promise);
-                Result::Ok(message)
+                Ok(message)
             })
             .collect();
 
         let mut iter = futures_util::stream::iter(messages);
-        self.write.borrow_mut().send_all(&mut iter).await.unwrap();
-        Result::Ok(join_all(promises).await)
+        self.write
+            .borrow_mut()
+            .send_all(&mut iter)
+            .await
+            .map_err(|_| ClientError::CommandSendError)?;
+        Ok(join_all(promises).await)
     }
 
-    fn prepare_command_to_send(&self, cmd: &Command) -> (Message, PinkySwear<CommandResponse>) {
+    fn prepare_command_to_send(
+        &self,
+        cmd: &Command,
+    ) -> Result<(Message, PinkySwear<CommandResponse>), ()> {
         let next_command_id = self.generate_next_id();
         let (promise, pinky) = PinkySwear::<CommandResponse>::new();
 
         self.ongoing_requests
             .lock()
+            //todo: get rid of this unwrap
             .unwrap()
             .insert(next_command_id, pinky);
-        let message = Message::from(&create_command(next_command_id, cmd).unwrap());
-        (message, promise)
+        let message = Message::from(&create_command(next_command_id, cmd));
+        Ok((message, promise))
     }
 
     fn generate_next_id(&self) -> u8 {
