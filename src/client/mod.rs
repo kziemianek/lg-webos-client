@@ -22,14 +22,13 @@ use super::command::{create_command, Command, CommandResponse};
 use crate::command::CommandRequest;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Client for interacting with TV
 pub struct WebosClient {
     write: RefCell<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
-    //todo: use uuids instead
-    next_command_id: Arc<Mutex<u8>>,
     //todo: use RwLock instead of Mutex or ?
-    ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
+    ongoing_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>>,
     pub key: Option<String>,
 }
 
@@ -86,8 +85,8 @@ impl WebosClient {
         mut sink: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         config: WebOsClientConfig,
     ) -> Result<WebosClient, ClientError> {
-        let next_command_id = Arc::from(Mutex::from(0));
-        let ongoing_requests = Arc::from(Mutex::from(HashMap::new()));
+        let ongoing_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>> =
+            Arc::from(Mutex::from(HashMap::new()));
         let requests_to_process = ongoing_requests.clone();
         let (registration_promise, registration_pinky) = PinkySwear::<Option<String>>::new();
         tokio::spawn(async move {
@@ -106,7 +105,6 @@ impl WebosClient {
         let key = registration_promise.await;
         Ok(WebosClient {
             write: RefCell::new(sink),
-            next_command_id,
             ongoing_requests,
             key,
         })
@@ -124,7 +122,7 @@ impl WebosClient {
         Ok(promise.await)
     }
 
-    /// Sends mutliple commands and waits for responses
+    /// Sends multiple commands and waits for responses
     pub async fn send_all_commands(
         &mut self,
         cmds: Vec<Command>,
@@ -152,31 +150,22 @@ impl WebosClient {
         &self,
         cmd: &Command,
     ) -> Result<(Message, PinkySwear<CommandResponse>), ()> {
-        let next_command_id = self.generate_next_id();
+        let id = Uuid::new_v4();
         let (promise, pinky) = PinkySwear::<CommandResponse>::new();
 
         self.ongoing_requests
             .lock()
             //todo: get rid of this unwrap
             .unwrap()
-            .insert(next_command_id, pinky);
-        let message = Message::from(&create_command(next_command_id, cmd));
+            .insert(id, pinky);
+        let message = Message::from(&create_command(id, cmd));
         Ok((message, promise))
-    }
-
-    fn generate_next_id(&self) -> u8 {
-        let mut guard = self
-            .next_command_id
-            .lock()
-            .expect("Could not lock next_command_id");
-        *guard += 1;
-        *guard
     }
 }
 
 async fn process_messages_from_server<T>(
     stream: T,
-    pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
+    pending_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>>,
     registration_pinky: Pinky<Option<String>>,
 ) where
     T: Stream<Item = Result<Message, Error>>,
@@ -195,22 +184,19 @@ async fn process_messages_from_server<T>(
                                 .map(Into::into);
                             registration_pinky.swear(key);
                         } else {
-                            let mut error: bool = false;
-                            let res = match json["id"].as_i64() {
-                                Some(r) => r,
-                                None => {
-                                    error = true;
-                                    0
+                            let id = serde_json::from_value::<Uuid>(json["id"].clone());
+                            match id {
+                                Ok(r) => {
+                                    let response = CommandResponse {
+                                        id: Some(r),
+                                        payload: Some(json["payload"].clone()),
+                                    };
+                                    let requests = pending_requests.lock().unwrap();
+                                    requests.get(&response.id.unwrap()).unwrap().swear(response);
                                 }
+                                // ignore message if id couldn't be parsed
+                                _ => (),
                             };
-                            if !error {
-                                let response = CommandResponse {
-                                    id: res as u8,
-                                    payload: Some(json["payload"].clone()),
-                                };
-                                let requests = pending_requests.lock().unwrap();
-                                requests.get(&response.id).unwrap().swear(response);
-                            }
                         }
                     }
                 }

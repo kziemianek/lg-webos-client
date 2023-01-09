@@ -1,10 +1,11 @@
 use serde::Serialize;
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandRequest {
-    id: u8,
+    id: Uuid,
     r#type: String,
     uri: String,
     payload: Option<Value>,
@@ -39,11 +40,11 @@ pub enum Command {
 }
 
 pub struct CommandResponse {
-    pub id: u8,
+    pub id: Option<Uuid>,
     pub payload: Option<Value>,
 }
 
-pub fn create_command(id: u8, cmd: &Command) -> CommandRequest {
+pub fn create_command(id: Uuid, cmd: &Command) -> CommandRequest {
     match cmd {
         Command::CreateToast(text) => CommandRequest {
             id,
