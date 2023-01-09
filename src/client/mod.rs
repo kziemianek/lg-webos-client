@@ -124,7 +124,7 @@ impl WebosClient {
 
     /// Sends multiple commands and waits for responses
     pub async fn send_all_commands(
-        &mut self,
+        self,
         cmds: Vec<Command>,
     ) -> Result<Vec<CommandResponse>, ClientError> {
         let mut promises: Vec<PinkySwear<CommandResponse>> = vec![];
