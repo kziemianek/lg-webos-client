@@ -1,7 +1,5 @@
-use futures::{
-    stream::{SplitSink, SplitStream},
-    Stream, StreamExt,
-};
+use futures::{Sink, Stream, StreamExt};
+use futures_util::stream::SplitSink;
 use futures_util::{
     future::{join_all, ready},
     SinkExt,
@@ -14,9 +12,10 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tokio_tungstenite::{tungstenite::Error, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::Error;
+use tokio_tungstenite::{
+    connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
+};
 
 use super::command::{create_command, Command, CommandResponse};
 use crate::command::CommandRequest;
@@ -25,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Client for interacting with TV
-pub struct WebosClient {
-    write: RefCell<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
+pub struct WebosClient<T> {
+    write: Box<RefCell<T>>,
     //todo: use RwLock instead of Mutex or ?
     ongoing_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>>,
     pub key: Option<String>,
@@ -67,9 +66,9 @@ impl Clone for WebOsClientConfig {
     }
 }
 
-impl WebosClient {
+impl WebosClient<SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>> {
     /// Creates client connected to device with given address
-    pub async fn new(config: WebOsClientConfig) -> Result<WebosClient, ClientError> {
+    pub async fn new(config: WebOsClientConfig) -> Result<Self, ClientError> {
         let url = url::Url::parse(&config.address).map_err(|_| ClientError::MalformedUrl)?;
         let (ws_stream, _) = connect_async(url)
             .await
@@ -78,13 +77,21 @@ impl WebosClient {
         let (write, read) = ws_stream.split();
         WebosClient::from_stream_and_sink(read, write, config).await
     }
+}
 
+impl<T> WebosClient<T>
+where
+    T: Sink<Message, Error = Error> + Unpin,
+{
     /// Creates client using provided stream and sink
-    pub async fn from_stream_and_sink(
-        stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-        mut sink: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    pub async fn from_stream_and_sink<S>(
+        stream: S,
+        mut sink: T,
         config: WebOsClientConfig,
-    ) -> Result<WebosClient, ClientError> {
+    ) -> Result<Self, ClientError>
+    where
+        S: Stream<Item = Result<Message, Error>> + Send + 'static,
+    {
         let ongoing_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>> =
             Arc::from(Mutex::from(HashMap::new()));
         let requests_to_process = ongoing_requests.clone();
@@ -98,13 +105,13 @@ impl WebosClient {
         if let Some(key) = config.key {
             handshake["payload"]["client-key"] = Value::from(key);
         }
-        let formatted_handshake = format!("{}", handshake);
+        let formatted_handshake = format!("{handshake}");
         sink.send(Message::text(formatted_handshake))
             .await
             .map_err(|_| ClientError::CommandSendError)?;
         let key = registration_promise.await;
         Ok(WebosClient {
-            write: RefCell::new(sink),
+            write: Box::new(RefCell::new(sink)),
             ongoing_requests,
             key,
         })
@@ -115,7 +122,8 @@ impl WebosClient {
             .prepare_command_to_send(&cmd)
             .map_err(|_| ClientError::CommandSendError)?;
         self.write
-            .borrow_mut()
+            .try_borrow_mut()
+            .map_err(|_| ClientError::CommandSendError)?
             .send(message)
             .await
             .map_err(|_| ClientError::CommandSendError)?;
@@ -139,7 +147,8 @@ impl WebosClient {
 
         let mut iter = futures_util::stream::iter(messages);
         self.write
-            .borrow_mut()
+            .try_borrow_mut()
+            .map_err(|_| ClientError::CommandSendError)?
             .send_all(&mut iter)
             .await
             .map_err(|_| ClientError::CommandSendError)?;
@@ -168,7 +177,7 @@ async fn process_messages_from_server<T>(
     pending_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>>,
     registration_pinky: Pinky<Option<String>>,
 ) where
-    T: Stream<Item = Result<Message, Error>>,
+    T: Stream<Item = Result<Message, Error>> + Send,
 {
     stream
         .for_each(|message| match message {
@@ -183,20 +192,13 @@ async fn process_messages_from_server<T>(
                                 .and_then(|k| k.as_str())
                                 .map(Into::into);
                             registration_pinky.swear(key);
-                        } else {
-                            let id = serde_json::from_value::<Uuid>(json["id"].clone());
-                            match id {
-                                Ok(r) => {
-                                    let response = CommandResponse {
-                                        id: Some(r),
-                                        payload: Some(json["payload"].clone()),
-                                    };
-                                    let requests = pending_requests.lock().unwrap();
-                                    requests.get(&response.id.unwrap()).unwrap().swear(response);
-                                }
-                                // ignore message if id couldn't be parsed
-                                _ => (),
+                        } else if let Ok(r) = serde_json::from_value::<Uuid>(json["id"].clone()) {
+                            let response = CommandResponse {
+                                id: Some(r),
+                                payload: Some(json["payload"].clone()),
                             };
+                            let requests = pending_requests.lock().unwrap();
+                            requests.get(&response.id.unwrap()).unwrap().swear(response);
                         }
                     }
                 }
@@ -220,4 +222,70 @@ impl From<&CommandRequest> for Message {
 /// The initial handshake packet needed to connect to a WebOS device.
 fn get_handshake() -> serde_json::Value {
     serde_json::from_str(include_str!("../handshake.json")).expect("Could not parse handshake json")
+}
+
+#[cfg(test)]
+mod tests {
+
+    struct LgDevice {
+        registered: bool,
+    }
+
+    impl Sink<Message> for LgDevice {
+        type Error = Error;
+
+        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Stream for LgDevice {
+        type Item = Result<Message, Error>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            if !self.registered {
+                self.get_mut().registered = true;
+                return Poll::Ready(Some(Ok(Message::Text(
+                    r#"{
+                        "type": "registered",
+                        "payload": {
+                            "client-key": "key"
+                        }
+                    }"#
+                    .to_owned(),
+                ))));
+            }
+            Poll::Pending
+        }
+    }
+
+    use crate::client::{WebOsClientConfig, WebosClient};
+    use futures_util::{sink, stream, Sink, SinkExt, Stream, StreamExt};
+    use std::ops::{Deref, DerefMut};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio_tungstenite::tungstenite::{Error, Message};
+
+    #[tokio::test]
+    async fn create_client() {
+        let device = LgDevice { registered: false };
+        let (sink, stream) = device.split();
+        assert!(
+            WebosClient::from_stream_and_sink(stream, sink, WebOsClientConfig::default())
+                .await
+                .is_ok()
+        );
+    }
 }
