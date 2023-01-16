@@ -229,6 +229,7 @@ mod tests {
 
     struct LgDevice {
         registered: bool,
+        responses: Vec<Message>
     }
 
     impl Sink<Message> for LgDevice {
@@ -271,16 +272,18 @@ mod tests {
         }
     }
 
+    use std::collections::HashMap;
     use crate::client::{WebOsClientConfig, WebosClient};
     use futures_util::{sink, stream, Sink, SinkExt, Stream, StreamExt};
     use std::ops::{Deref, DerefMut};
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio_tungstenite::tungstenite::{Error, Message};
+    use crate::command::Command;
 
     #[tokio::test]
     async fn create_client() {
-        let device = LgDevice { registered: false };
+        let device = LgDevice { registered: false, responses: Vec::new() };
         let (sink, stream) = device.split();
         assert!(
             WebosClient::from_stream_and_sink(stream, sink, WebOsClientConfig::default())
@@ -288,4 +291,5 @@ mod tests {
                 .is_ok()
         );
     }
+
 }
