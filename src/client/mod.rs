@@ -8,6 +8,8 @@ use futures_util::{
 use log::debug;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
+use futures::channel::oneshot;
+use futures::channel::oneshot::{Receiver, Sender};
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
@@ -17,8 +19,6 @@ use super::command::{create_command, Command, CommandResponse};
 use crate::command::CommandRequest;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
-use tokio::sync::oneshot::{Receiver, Sender};
 
 /// Client for interacting with TV
 pub struct WebosClient<T> {
