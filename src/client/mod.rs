@@ -260,7 +260,10 @@ mod tests {
     impl Sink<Message> for LgDevice {
         type Error = Error;
 
-        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
@@ -278,11 +281,17 @@ mod tests {
             Ok(())
         }
 
-        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
 
-        fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
     }
@@ -315,12 +324,10 @@ mod tests {
     }
 
     use crate::client::{WebOsClientConfig, WebosClient};
-    use crate::command::{Command, CommandResponse};
-    use futures_util::{sink, stream, Sink, SinkExt, Stream, StreamExt};
+    use crate::command::Command;
+    use futures_util::{Sink, Stream, StreamExt};
     use serde_json::Value;
     use std::collections::{HashMap, VecDeque};
-    use std::hash::Hash;
-    use std::ops::{Deref, DerefMut};
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio_tungstenite::tungstenite::{Error, Message};
