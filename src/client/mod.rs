@@ -124,7 +124,6 @@ where
         self.write
             .lock()
             .await
-            // .map_err(|_| ClientError::CommandSendError)?
             .send(message)
             .await
             .map_err(|_| ClientError::CommandSendError)?;
