@@ -1,17 +1,13 @@
 use futures::{Sink, Stream, StreamExt};
+use futures_util::lock::Mutex;
 use futures_util::stream::SplitSink;
 use futures_util::{
     future::{join_all, ready},
     SinkExt,
 };
 use log::debug;
-use pinky_swear::{Pinky, PinkySwear};
 use serde_json::Value;
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
@@ -21,13 +17,14 @@ use super::command::{create_command, Command, CommandResponse};
 use crate::command::CommandRequest;
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use tokio::sync::oneshot;
+use tokio::sync::oneshot::{Receiver, Sender};
 
 /// Client for interacting with TV
 pub struct WebosClient<T> {
-    write: Box<RefCell<T>>,
-    //todo: use RwLock instead of Mutex or ?
-    ongoing_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>>,
+    write: Box<Mutex<T>>,
+    next_command_id: Arc<Mutex<u64>>,
+    callbacks: Arc<Mutex<HashMap<String, Sender<CommandResponse>>>>,
     pub key: Option<String>,
 }
 
@@ -92,42 +89,46 @@ where
     where
         S: Stream<Item = Result<Message, Error>> + Send + 'static,
     {
-        let ongoing_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>> =
+        let command_id_generator = Arc::from(Mutex::from(0));
+        let callbacks: Arc<Mutex<HashMap<String, Sender<CommandResponse>>>> =
             Arc::from(Mutex::from(HashMap::new()));
-        let requests_to_process = ongoing_requests.clone();
-        let (registration_promise, registration_pinky) = PinkySwear::<Option<String>>::new();
-        tokio::spawn(async move {
-            process_messages_from_server(stream, requests_to_process, registration_pinky).await
-        });
-
+        let callbacks_copy = callbacks.clone();
+        let (sender, receiver) = oneshot::channel::<CommandResponse>();
+        tokio::spawn(async move { process_messages_from_server(stream, callbacks_copy).await });
         let mut handshake = get_handshake();
         // Check to see if the config has a key, if it does, add it to the handshake.
         if let Some(key) = config.key {
             handshake["payload"]["client-key"] = Value::from(key);
         }
+        let registration_id = 0.to_string();
+        handshake["id"] = Value::from(registration_id.to_string());
+        callbacks.lock().await.insert(registration_id, sender);
         let formatted_handshake = format!("{handshake}");
         sink.send(Message::text(formatted_handshake))
             .await
             .map_err(|_| ClientError::CommandSendError)?;
-        let key = registration_promise.await;
+        let key = Some(receiver.await.unwrap().payload.unwrap().to_string());
         Ok(WebosClient {
-            write: Box::new(RefCell::new(sink)),
-            ongoing_requests,
+            write: Box::new(Mutex::new(sink)),
+            next_command_id: command_id_generator,
+            callbacks,
             key,
         })
     }
     /// Sends single command and waits for response
-    pub async fn send_command(self, cmd: Command) -> Result<CommandResponse, ClientError> {
+    pub async fn send_command(&self, cmd: Command) -> Result<CommandResponse, ClientError> {
         let (message, promise) = self
-            .prepare_command_to_send(&cmd)
+            .prepare_command_to_send(cmd)
+            .await
             .map_err(|_| ClientError::CommandSendError)?;
         self.write
-            .try_borrow_mut()
-            .map_err(|_| ClientError::CommandSendError)?
+            .lock()
+            .await
+            // .map_err(|_| ClientError::CommandSendError)?
             .send(message)
             .await
             .map_err(|_| ClientError::CommandSendError)?;
-        Ok(promise.await)
+        promise.await.map_err(|_| ClientError::CommandSendError)
     }
 
     /// Sends multiple commands and waits for responses
@@ -135,47 +136,61 @@ where
         self,
         cmds: Vec<Command>,
     ) -> Result<Vec<CommandResponse>, ClientError> {
-        let mut promises: Vec<PinkySwear<CommandResponse>> = vec![];
-        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = cmds
-            .iter()
-            .map(|cmd| {
-                let (message, promise) = self.prepare_command_to_send(cmd).unwrap();
-                promises.push(promise);
-                Ok(message)
+        let mut promises: Vec<Receiver<CommandResponse>> = vec![];
+        let commands = join_all(
+            cmds.into_iter()
+                .map(|cmd| async { self.prepare_command_to_send(cmd).await }),
+        )
+        .await;
+        let messages: Vec<Result<Message, Error>> = commands
+            .into_iter()
+            .map(|command| {
+                let x = command.unwrap();
+                promises.push(x.1);
+                Ok(x.0)
             })
             .collect();
 
         let mut iter = futures_util::stream::iter(messages);
         self.write
-            .try_borrow_mut()
-            .map_err(|_| ClientError::CommandSendError)?
+            .lock()
+            .await
             .send_all(&mut iter)
             .await
             .map_err(|_| ClientError::CommandSendError)?;
-        Ok(join_all(promises).await)
+        Ok(join_all(promises)
+            .await
+            .into_iter()
+            .map(|resp| resp.unwrap())
+            .collect())
     }
 
-    fn prepare_command_to_send(
+    async fn prepare_command_to_send(
         &self,
-        cmd: &Command,
-    ) -> Result<(Message, PinkySwear<CommandResponse>), ()> {
-        let id = Uuid::new_v4();
-        let (promise, pinky) = PinkySwear::<CommandResponse>::new();
+        cmd: Command,
+    ) -> Result<(Message, Receiver<CommandResponse>), ()> {
+        let id = self.generate_next_id().await;
+        let (sender, receiver) = oneshot::channel::<CommandResponse>();
 
-        self.ongoing_requests
-            .lock()
-            //todo: get rid of this unwrap
-            .unwrap()
-            .insert(id, pinky);
-        let message = Message::from(&create_command(id, cmd));
-        Ok((message, promise))
+        if let Some(mut lock) = self.callbacks.try_lock() {
+            lock.insert(id.clone(), sender);
+            let message = Message::from(&create_command(id, cmd));
+            Ok((message, receiver))
+        } else {
+            Err(())
+        }
+    }
+
+    async fn generate_next_id(&self) -> String {
+        let mut guard = self.next_command_id.lock().await;
+        *guard += 1;
+        guard.to_string()
     }
 }
 
 async fn process_messages_from_server<T>(
     stream: T,
-    pending_requests: Arc<Mutex<HashMap<Uuid, Pinky<CommandResponse>>>>,
-    registration_pinky: Pinky<Option<String>>,
+    pending_requests: Arc<Mutex<HashMap<String, Sender<CommandResponse>>>>,
 ) where
     T: Stream<Item = Result<Message, Error>> + Send,
 {
@@ -184,21 +199,21 @@ async fn process_messages_from_server<T>(
             Ok(_message) => {
                 if let Ok(text_message) = _message.into_text() {
                     if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
-                        debug!("JSON Response: {}", json);
-                        if json["type"] == "registered" {
-                            let key = json
-                                .get("payload")
-                                .and_then(|p| p.get("client-key"))
-                                .and_then(|k| k.as_str())
-                                .map(Into::into);
-                            registration_pinky.swear(key);
-                        } else if let Ok(r) = serde_json::from_value::<Uuid>(json["id"].clone()) {
-                            let response = CommandResponse {
-                                id: Some(r),
-                                payload: Some(json["payload"].clone()),
-                            };
-                            let requests = pending_requests.lock().unwrap();
-                            requests.get(&response.id.unwrap()).unwrap().swear(response);
+                        if let Some(r) = json["id"].as_str() {
+                            // there is one response after pairing prompt which we need to skip
+                            if json["payload"]["pairingType"] != "PROMPT" {
+                                let response = CommandResponse {
+                                    id: Some(r.to_string()),
+                                    payload: Some(json["payload"].clone()),
+                                };
+                                if let Some(mut requests) = pending_requests.try_lock() {
+                                    if let Some(id) = response.id.clone() {
+                                        if let Some(sender) = requests.remove(&id) {
+                                            sender.send(response).unwrap();
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -215,7 +230,7 @@ impl From<&CommandRequest> for Message {
     }
 }
 
-/// Get the initial handhsake packet for connecting to a device.
+/// Get the initial handshake packet for connecting to a device.
 /// A client-key can be set by something similar to
 /// `get_handshake()["payload"]["client-key"] = ...`
 /// # Return
@@ -229,7 +244,17 @@ mod tests {
 
     struct LgDevice {
         registered: bool,
-        responses: Vec<Message>
+        responses: HashMap<String, Message>,
+        queue: VecDeque<Message>,
+    }
+    impl LgDevice {
+        pub fn new(responses: HashMap<String, Message>) -> Self {
+            LgDevice {
+                registered: false,
+                responses,
+                queue: VecDeque::new(),
+            }
+        }
     }
 
     impl Sink<Message> for LgDevice {
@@ -240,6 +265,16 @@ mod tests {
         }
 
         fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            if let Ok(text_message) = item.into_text() {
+                if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
+                    let id = json["id"].as_str().unwrap();
+                    let mut _self = self.get_mut();
+                    if let Some(response) = _self.responses.remove(id) {
+                        _self.queue.push_front(response);
+                    }
+                }
+            }
+
             Ok(())
         }
 
@@ -256,10 +291,12 @@ mod tests {
         type Item = Result<Message, Error>;
 
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            cx.waker().wake_by_ref();
             if !self.registered {
                 self.get_mut().registered = true;
                 return Poll::Ready(Some(Ok(Message::Text(
                     r#"{
+                        "id": "0",
                         "type": "registered",
                         "payload": {
                             "client-key": "key"
@@ -267,23 +304,30 @@ mod tests {
                     }"#
                     .to_owned(),
                 ))));
+            } else {
+                return if let Some(message) = self.get_mut().queue.pop_front() {
+                    Poll::Ready(Some(Ok(message)))
+                } else {
+                    Poll::Pending
+                };
             }
-            Poll::Pending
         }
     }
 
-    use std::collections::HashMap;
     use crate::client::{WebOsClientConfig, WebosClient};
+    use crate::command::{Command, CommandResponse};
     use futures_util::{sink, stream, Sink, SinkExt, Stream, StreamExt};
+    use serde_json::Value;
+    use std::collections::{HashMap, VecDeque};
+    use std::hash::Hash;
     use std::ops::{Deref, DerefMut};
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio_tungstenite::tungstenite::{Error, Message};
-    use crate::command::Command;
 
     #[tokio::test]
     async fn create_client() {
-        let device = LgDevice { registered: false, responses: Vec::new() };
+        let device = LgDevice::new(HashMap::new());
         let (sink, stream) = device.split();
         assert!(
             WebosClient::from_stream_and_sink(stream, sink, WebOsClientConfig::default())
@@ -292,4 +336,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn send_command() {
+        let mut responses = HashMap::new();
+        responses.insert(
+            "1".to_owned(),
+            Message::Text(
+                r#"
+                {
+                    "id": "1",
+                    "payload": {
+                                    "returnValue": true
+                                },
+                    "type":"response"
+                }"#
+                .to_owned(),
+            ),
+        );
+
+        let device = LgDevice::new(responses);
+        let (sink, stream) = device.split();
+        let client = WebosClient::from_stream_and_sink(stream, sink, WebOsClientConfig::default())
+            .await
+            .unwrap();
+        client.send_command(Command::ChannelUp).await.unwrap();
+    }
 }
