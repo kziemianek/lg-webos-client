@@ -140,7 +140,7 @@ where
             cmds.into_iter()
                 .map(|cmd| async { self.prepare_command_to_send(cmd).await }),
         )
-            .await;
+        .await;
         let messages: Vec<Result<Message, Error>> = commands
             .into_iter()
             .map(|command| {
