@@ -130,6 +130,40 @@ where
         promise.await.map_err(|_| ClientError::CommandSendError)
     }
 
+    /// Sends multiple commands and waits for responses
+    pub async fn send_all_commands(
+        self,
+        cmds: Vec<Command>,
+    ) -> Result<Vec<CommandResponse>, ClientError> {
+        let mut promises: Vec<Receiver<CommandResponse>> = vec![];
+        let commands = join_all(
+            cmds.into_iter()
+                .map(|cmd| async { self.prepare_command_to_send(cmd).await }),
+        )
+            .await;
+        let messages: Vec<Result<Message, Error>> = commands
+            .into_iter()
+            .map(|command| {
+                let x = command.unwrap();
+                promises.push(x.1);
+                Ok(x.0)
+            })
+            .collect();
+
+        let mut iter = futures_util::stream::iter(messages);
+        self.write
+            .lock()
+            .await
+            .send_all(&mut iter)
+            .await
+            .map_err(|_| ClientError::CommandSendError)?;
+        Ok(join_all(promises)
+            .await
+            .into_iter()
+            .map(|resp| resp.unwrap())
+            .collect())
+    }
+
     /// Sends a special luna command and waits for response
     pub async fn send_luna_command(
         &self,
