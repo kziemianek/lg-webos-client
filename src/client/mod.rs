@@ -1,3 +1,5 @@
+use futures::channel::oneshot;
+use futures::channel::oneshot::{Receiver, Sender};
 use futures::{Sink, Stream, StreamExt};
 use futures_util::lock::Mutex;
 use futures_util::stream::SplitSink;
@@ -6,10 +8,8 @@ use futures_util::{
     SinkExt,
 };
 use log::debug;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};
-use futures::channel::oneshot;
-use futures::channel::oneshot::{Receiver, Sender};
 use tokio_tungstenite::tungstenite::Error;
 use tokio_tungstenite::{
     connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
@@ -162,6 +162,52 @@ where
             .into_iter()
             .map(|resp| resp.unwrap())
             .collect())
+    }
+
+    /// Sends a special luna command and waits for response
+    pub async fn send_luna_command(
+        &self,
+        luna_uri: &'static str,
+        params: Value,
+    ) -> Result<CommandResponse, ClientError> {
+        // https://github.com/chros73/bscpylgtv/blob/master/bscpylgtv/webos_client.py#L1098
+        // n.b. this is a hack which abuses the alert API
+        // to call the internal luna API which is otherwise
+        // not exposed through the websocket interface
+        // An important limitation is that any returned
+        // data is not accessible
+
+        // set desired action for click, fail and close
+        // for redundancy/robustness
+
+        let luna_uri = format!("luna://{}", luna_uri);
+
+        let buttons = vec![json!({
+            "label": "",
+            "onClick": luna_uri,
+            "params": params
+        })];
+
+        let payload = json!({
+            "message": " ",
+            "buttons": buttons,
+            "onclose": {"uri": luna_uri, "params": params},
+            "onfail": {"uri": luna_uri, "params": params},
+        });
+
+        let alert = self.send_command(Command::CreateAlert(payload)).await?;
+
+        let alert_id = alert.payload.map(|v| {
+            let str = v["alertId"].as_str().unwrap();
+            // We first need to convert to str before calling to_string else this does not parse properly.
+            str.to_string()
+        });
+
+        if let Some(alert_id) = alert_id {
+            self.send_command(Command::CloseAlert(alert_id)).await
+        } else {
+            Err(ClientError::CommandSendError)
+        }
     }
 
     async fn prepare_command_to_send(
