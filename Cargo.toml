@@ -10,15 +10,15 @@ license-file = "LICENSE"
 keywords = ["lg", "webos", "client"]
 
 [dependencies]
-tokio-tungstenite = "0.18.0"
-futures = "0.3.25"
-futures-util = "0.3.25"
-tokio = { version = "1.24.1", default-features = false, features = ["rt"] }
-url = "2.3.1"
-serde_json = "1.0.91"
-serde = { version = "1.0.152", features = ["derive"]}
-log = "0.4.17"
+tokio-tungstenite = { version = "0.24.0", features = ["url"]}
+futures = "0.3.31"
+futures-util = "0.3.31"
+tokio = { version = "1.40.0", default-features = false, features = ["rt"] }
+url = "2.5.2"
+serde_json = "1.0.128"
+serde = { version = "1.0.210", features = ["derive"]}
+log = "0.4.22"
 
 [dev-dependencies]
-env_logger = "0.10.0"
-tokio = { version = "1.24.1", default-features = false, features = ["full"] }
+env_logger = "0.11.5"
+tokio = { version = "1.40.0", default-features = false, features = ["full"] }
