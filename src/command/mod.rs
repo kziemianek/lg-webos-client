@@ -5,12 +5,14 @@ use serde_json::{json, Value};
 #[serde(rename_all = "camelCase")]
 pub struct CommandRequest {
     id: String,
-    r#type: String,
+    r#type: String, // Required by lg api
     uri: String,
     payload: Option<Value>,
 }
 
 pub enum Command {
+    CreateAlert(Value),
+    CloseAlert(String),
     CreateToast(String),
     OpenBrowser(String),
     TurnOff,
@@ -46,6 +48,18 @@ pub struct CommandResponse {
 
 pub fn create_command(id: String, cmd: Command) -> CommandRequest {
     match cmd {
+        Command::CreateAlert(payload) => CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://system.notifications/createAlert"),
+            payload: Some(payload),
+        },
+        Command::CloseAlert(alert_id) => CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://system.notifications/closeAlert"),
+            payload: Some(json!({"alertId": alert_id})),
+        },
         Command::CreateToast(text) => CommandRequest {
             id,
             r#type: String::from("request"),
