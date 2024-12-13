@@ -38,7 +38,7 @@ pub enum Command {
     Turn3DOff,
     GetServicesList,
     Launch(String, Value),
-    GetAudioOutputs,
+    GetAudioOutput,
 }
 
 #[derive(Debug)]
@@ -211,7 +211,7 @@ pub fn create_command(id: String, cmd: Command) -> CommandRequest {
             uri: String::from("ssap://system.launcher/launch"),
             payload: Some(json!({ "id": app_id, "params": params })),
         },
-        Command::GetAudioOutputs => CommandRequest {
+        Command::GetAudioOutput => CommandRequest {
             id,
             r#type: String::from("request"),
             uri: String::from("ssap://audio/getSoundOutput"),
