@@ -37,6 +37,7 @@ pub enum Command {
     Turn3DOn,
     Turn3DOff,
     GetServicesList,
+    GetSystemSettings(String, Vec<String>),
     Launch(String, Value),
 }
 
@@ -209,6 +210,12 @@ pub fn create_command(id: String, cmd: Command) -> CommandRequest {
             r#type: String::from("request"),
             uri: String::from("ssap://system.launcher/launch"),
             payload: Some(json!({ "id": app_id, "params": params })),
+        },
+        Command::GetSystemSettings(category, keys) => CommandRequest {
+            id,
+            r#type: String::from("request"),
+            uri: String::from("ssap://settings/getSystemSettings"),
+            payload: Some(json!({ "category": category, "keys": keys })),
         },
     }
 }
