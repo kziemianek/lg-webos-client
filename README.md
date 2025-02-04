@@ -1,4 +1,4 @@
-# LG WebOs Client 0.4.0
+# LG WebOs Client
 
 [![Build Status](https://travis-ci.com/kziemianek/lg-webos-client.svg?branch=main)](https://travis-ci.com/kziemianek/lg-webos-client)
 
@@ -33,6 +33,7 @@ Inspired by [lgtv.js](https://github.com/msloth/lgtv.js)
 * Turn 3d off
 * Get services list
 * Launch an app
+* Get an audio output
 
 ## Example
 
