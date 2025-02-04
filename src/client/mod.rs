@@ -20,7 +20,7 @@ use crate::command::CommandRequest;
 
 use serde::{Deserialize, Serialize};
 
-/// Client for interacting with TV
+// WebOS TV websocket client allowing to communicate in request-response manner.
 pub struct WebosClient<T> {
     write: Box<Mutex<T>>,
     next_command_id: Arc<Mutex<u64>>,
